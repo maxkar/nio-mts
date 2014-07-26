@@ -14,7 +14,7 @@ import java.nio.channels.Selector
 private [chan] class CommandQueue(backlog : Int, notifier : () ⇒ Unit) {
 
   /* Element type. */
-  type T = Selector ⇒ Unit
+  type T = (Selector, Long) ⇒ Unit
 
   if (backlog > Integer.MAX_VALUE / 2 - 1)
     throw new InsufficientResourcesError(backlog + " is too much for the backlog")
