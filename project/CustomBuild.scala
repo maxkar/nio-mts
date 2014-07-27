@@ -148,11 +148,13 @@ object CustomBuild extends Build {
   }
 
   /* Projects. */
-  lazy val app = prj("app")
+  lazy val lib_comm = prj("lib-comm")
+  lazy val demo_echo = prj("apps/demo-echo", lib_comm)
 
   lazy val root = Project("root", file("."),
     settings = buildSettings ++ unidocSettings ++ Seq(Tasks.internalName := "root")
   ).aggregate(
-    app
+    lib_comm,
+    demo_echo
   )
 }

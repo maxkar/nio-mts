@@ -148,13 +148,13 @@ final class Multiplexor private(
     try {
       val handler = key.attachment().asInstanceOf[SelectionHandler]
 
-      if (key.isAcceptable())
+      if (key.isValid() && key.isAcceptable())
         handler.accept(key, now)
-      if (key.isConnectable())
+      if (key.isValid() && key.isConnectable())
         handler.connected(key, now)
-      if (key.isReadable())
+      if (key.isValid() && key.isReadable())
         handler.read(key, now)
-      if (key.isWritable())
+      if (key.isValid() && key.isWritable())
         handler.write(key, now)
     } catch {
       case t : Throwable ⇒
@@ -203,6 +203,7 @@ final class Multiplexor private(
   /** "Demuxes" one item. */
   private def demuxOne(key : SelectionKey) : Unit = {
     try {
+      key.attachment().asInstanceOf[SelectionHandler].demultiplex(key)
     } catch {
       case t : Throwable ⇒
         try {

@@ -11,16 +11,15 @@ private[chan] class AcceptorHandler(
 
   def accept(item : SelectionKey, timestamp : Long) : Unit = {
     val sock = item.channel().asInstanceOf[ServerSocketChannel]
-    val chan =
-      try {
-        sock.accept()
-      } catch {
-        case t : Throwable ⇒
-          exnHandler(sock.asInstanceOf[ServerSocketChannel], t)
-          return
-      }
-
-    connHandler(chan, item.selector(), timestamp)
+    try {
+      var chan = sock.accept()
+      if (chan == null)
+        return
+      connHandler(chan, item.selector(), timestamp)
+    } catch {
+      case t : Throwable ⇒
+        exnHandler(sock.asInstanceOf[ServerSocketChannel], t)
+    }
   }
 
   def connected(item : SelectionKey, timestamp : Long) : Unit = ()
