@@ -89,17 +89,20 @@ private [chan] class CommandQueue(backlog : Int, notifier : () ⇒ Unit) {
    * enqueue a first used killer. Other killers will be
    * ignored. Other items will not be put into this queue.
    * There is always enough space for a killer.
+   * @return <code>true</code> if killer was put or
+   *  <code>false</code> if this queue already have a killer.
    */
-  private[chan] def putKiller(item : T) : Unit =
+  private[chan] def putKiller(item : T) : Boolean =
     lock synchronized {
       if (eof)
-        return
+        return false
 
       /* backlog in processing + backlog in queue + this killer =
        * acutal queue capacity.
        */
       enqueue(item)
       eof = true
+      true
     }
 
 

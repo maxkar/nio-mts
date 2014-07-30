@@ -24,6 +24,7 @@ import java.nio.channels._
  * @param onConnect "ready to connect" handler for channels.
  * @param onRead "ready to read" handler for channels.
  * @param onWrite "ready to write" handler for channels.
+ * @param onPing "regular ping" handler for channels.
  * @param onError error handler for the channel. This error
  *  handler will be called if any errors occurs during an
  *  execution of onAccept/onConnect/onRead/onWrite.
@@ -32,9 +33,10 @@ import java.nio.channels._
  *    instead.
  */
 final class IOHandler[-C](
-    val onAccept : (SelectionKey, C) ⇒  Unit,
-    val onConnect : (SelectionKey, C) ⇒ Unit,
-    val onRead : (SelectionKey, C) ⇒ Unit,
-    val onWrite : (SelectionKey, C) ⇒ Unit,
-    val onError : (SelectionKey, C, Throwable) ⇒ Unit
+    val onAccept : (SelectionKey, Long, C) ⇒  Unit,
+    val onConnect : (SelectionKey, Long, C) ⇒ Unit,
+    val onRead : (SelectionKey, Long, C) ⇒ Unit,
+    val onWrite : (SelectionKey, Long, C) ⇒ Unit,
+    val onPing : (SelectionKey, Long, C) ⇒ Unit,
+    val onError : (SelectionKey, Long, C, Throwable) ⇒ Unit
   )

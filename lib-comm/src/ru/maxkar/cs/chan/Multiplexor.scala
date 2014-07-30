@@ -6,6 +6,9 @@ import java.nio.channels._
 /**
  * Communication multiplexor. Performs all the communications
  * in a single-threaded manner.
+ * @param C type of the context. All attachments should be
+ *  compatible with this type.
+ * @param handler input/output handler.
  * @param commandBacklog number of command available to
  *   leave unprocessed.
  * @param commandBatchSize number of commands to
@@ -14,7 +17,8 @@ import java.nio.channels._
  *   in millis
  * @param threadFactory factory for thread creation.
  */
-final class Multiplexor private(
+final class Multiplexor[C] private(
+    handler : IOHandler[C],
     commandBacklog : Int,
     commandBatchSize : Int,
     pingTimeoutMs : Int,
@@ -43,7 +47,7 @@ final class Multiplexor private(
   /**
    * Submits a command for the execution. Command must behave
    * nicely to the selector. If command adds item to the selector, then
-   * it should register SelectionHandler as an attachment.
+   * it should register an instance of C as an attachment.
    * @throws InsufficientResouresException if queue is full.
    * @throws IOException if this multiplexor is closing or closed.
    */
@@ -64,8 +68,25 @@ final class Multiplexor private(
 
   /**
    * Closes this multiplexor but does not wait for termination.
+   * @returns <code>true</code> if it is a first call to close/closeBy and
+   *  <code>false</code> otherwise.
    */
-  def close() : Unit = queue.putKiller(doClose)
+  def close() : Boolean = closeBy(Multiplexor.closeAll)
+
+
+  /**
+   * Closes a multiplexor by invoking a killer on the seletor.
+   * In general, this selector should close all the channels
+   * or move them to other selector (or queue). This method does
+   * not wait for a complete termination.
+   * See SelectorUtil for handfull methods.
+   * @return <code>true</code> if this is a first close
+   *  request and passed closer will be applied to the selector.
+   *  Returns <code>false</code> iff this multiplexor is
+   *  closing or closed and this closer will be ignored.
+   */
+  def closeBy(closer : (Selector, Long) ⇒ Unit) : Boolean =
+    queue.putKiller(closer)
 
 
 
@@ -99,9 +120,13 @@ final class Multiplexor private(
         now = System.currentTimeMillis()
       }
     } finally {
-      /* It is open in a case of exception. */
+      /* It is open in a case of (fatal) exception.
+       * Try to gracefully close all remaining connections.
+       */
       if (selector.isOpen())
-        doClose(selector, now)
+        SelectorUtil.safeAbortBy(selector, key ⇒
+          if (key.isValid())
+            key.channel().close())
     }
   }
 
@@ -130,98 +155,47 @@ final class Multiplexor private(
 
     val iter = selector.keys().iterator()
     while (iter.hasNext())
-      pingOne(iter.next(), now)
-  }
-
-
-  /* Performs an actual closing on the selector. */
-  private def doClose(selector : Selector, now : Long) : Unit = {
-    val iter = selector.keys().iterator()
-    while (iter.hasNext())
-      demuxOne(iter.next())
-    selector.close()
+      doOp(iter.next(), now, handler.onPing)
   }
 
 
   /** Handles one I/O operation. */
   private def handleOneIO(key : SelectionKey, now : Long) : Unit = {
-    try {
-      val handler = key.attachment().asInstanceOf[SelectionHandler]
-
-      if (key.isValid() && key.isAcceptable())
-        handler.accept(key, now)
-      if (key.isValid() && key.isConnectable())
-        handler.connected(key, now)
-      if (key.isValid() && key.isReadable())
-        handler.read(key, now)
-      if (key.isValid() && key.isWritable())
-        handler.write(key, now)
-    } catch {
-      case t : Throwable ⇒
-        try {
-          /* Cancel selection and close the channel. We can't deal
-           * with the broken handler. */
-          try {
-            key.cancel()
-          } finally {
-            key.channel().close()
-          }
-          t.printStackTrace()
-        } catch {
-          case x : Throwable ⇒ x.printStackTrace()
-        }
-    }
+    if (key.isValid() && key.isAcceptable())
+      doOp(key, now, handler.onAccept)
+    if (key.isValid() && key.isConnectable())
+      doOp(key, now, handler.onConnect)
+    if (key.isValid() && key.isReadable())
+      doOp(key, now, handler.onRead)
+    if (key.isValid() && key.isWritable())
+      doOp(key, now, handler.onWrite)
   }
 
-
-  /**
-   * Pings one item.
+  /*
+   * Performs one operation. Calls an error handler in a case
+   * of the exception.
    */
-  private def pingOne(key : SelectionKey, now : Long) : Unit = {
+  private def doOp(
+        key : SelectionKey, now : Long,
+        op : (SelectionKey, Long, C) ⇒ Unit)
+      : Unit =
     try {
-      val handler = key.attachment().asInstanceOf[SelectionHandler]
-
-      handler.ping(key, now)
+      op(key, now, key.attachment().asInstanceOf[C])
     } catch {
       case t : Throwable ⇒
         try {
-          /* Cancel selection and close the channel. We can't deal
-           * with the broken handler. */
-          try {
-            key.cancel()
-          } finally {
-            key.channel().close()
-          }
-          t.printStackTrace()
+          handler.onError(key, now, key.attachment().asInstanceOf[C], t)
         } catch {
-          case x : Throwable ⇒ x.printStackTrace()
+          case t : Throwable ⇒
+            t.printStackTrace()
+            try {
+              key.channel().close()
+            } catch {
+              case t : java.io.IOException ⇒ t.printStackTrace()
+            }
         }
     }
-  }
 
-
-  /** "Demuxes" one item. */
-  private def demuxOne(key : SelectionKey) : Unit = {
-    try {
-      key.attachment().asInstanceOf[SelectionHandler].demultiplex(key)
-    } catch {
-      case t : Throwable ⇒
-        try {
-          /* Cancel selection and close the channel. We can't deal
-           * with the broken handler. It is better to close the channel
-           * (if handler failed to handle this) otherwise we can end up
-           * with the broken channel. */
-          try {
-            key.cancel()
-          } finally {
-            key.channel().close()
-          }
-          t.printStackTrace()
-        } catch {
-          case x : Throwable ⇒ x.printStackTrace()
-        }
-    }
-  }
 
 
   /*
@@ -257,6 +231,30 @@ final class Multiplexor private(
 
 /** Multiplexor companion. */
 object Multiplexor {
+  import SelectorUtil._
+
+
+
+  /** Temporary handler. */
+  @deprecated
+  private val compatHandler = new IOHandler[SelectionHandler](
+    onAccept = (k, t, c) ⇒ c.accept(k, t),
+    onConnect = (k, t, c) ⇒ c.connected(k, t),
+    onRead = (k, t, c) ⇒ c.read(k, t),
+    onWrite = (k, t, c) ⇒ c.write(k, t),
+    onPing = (k, t, c) ⇒ c.ping(k, t),
+    onError =
+     (k, t, c, err) ⇒ {
+       try {
+         err.printStackTrace()
+       } finally {
+         c.demultiplex(k)
+       }
+     }
+  )
+
+
+
   /** Creates a new multiplexor.
    * @param commandBacklog number of commands allowed in the queue.
    * @param pingTimeoutMs ping timeout in millis.
@@ -271,8 +269,9 @@ object Multiplexor {
         pingTimeoutMs : Int,
         commandBatchSize : Int = 0,
         threadFactory : Runnable ⇒ Thread = null)
-      : Multiplexor = {
+      : Multiplexor[SelectionHandler] = {
     val result = new Multiplexor(
+      compatHandler,
       commandBacklog,
       if (commandBatchSize <= 0) commandBacklog else commandBatchSize,
       pingTimeoutMs,
@@ -289,4 +288,71 @@ object Multiplexor {
     res.setName("IO Multiplexor thread")
     res
   }
+
+
+
+  /**
+   * This handler will print stack trace of the exception
+   * and will close an associated channel.
+   */
+  def printStackAndClose(
+        key : SelectionKey, t : Long, c : Any, err : Throwable)
+      : Unit =
+    try {
+      err.printStackTrace()
+    } finally {
+      key.channel().close()
+    }
+
+
+
+  /** This handler will try to close a channel silently
+   * (completely ignoring an exception).
+   */
+  def closeSilently(
+        key : SelectionKey, t : Long, c : Any, err : Throwable)
+      : Unit =
+    key.channel().close()
+
+
+
+  /** Aborts the processing by closing failed channel,
+   * all other channels associated with <code>key</code>'s
+   * selector and selector itself.
+   * Attempts to print source throwable and all throwables
+   * during the process.
+   */
+  def printStackAndAbort(
+        key : SelectionKey, t : Long, c : Any, err : Throwable)
+      : Unit =
+    try {
+      err.printStackTrace()
+    } finally {
+      safeAbortBy(key.selector(), key ⇒ key.channel().close())
+    }
+
+
+
+  /** Aborts processing by closing failed channels,
+   * all other channels associated wich <code>key</code>'s
+   * selector and selector itself.
+   * Silently ignores both <code>err</code> and exceptions
+   * happening during calls to close.
+   */
+  def abortSilently(
+        key : SelectionKey, t : Long, c : Any, err : Throwable)
+      : Unit =
+    unsafeAbortBy(key.selector(), item ⇒
+      try {
+        item.channel().close()
+      } finally {
+      })
+
+
+
+  /** Default close handler which closes all the associated channels
+   * and selector itself.
+   */
+  def closeAll(selector : Selector, now : Long) : Unit =
+    safeAbortBy(selector, item ⇒ item.channel().close())
 }
