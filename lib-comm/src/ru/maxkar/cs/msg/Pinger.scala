@@ -10,16 +10,16 @@ import java.io.IOException
  * @param interval ping interval
  * @param requestor ping request function.
  */
-private [msg] final class Pinger(
+final class Pinger(
       timeout : Int,
       interval : Int,
       requestor : () ⇒ Unit) {
 
   /** Time when a next ping is expected. */
-  var replyExpected : Long = 0
+  private var replyExpected : Long = 0
 
   /** Next ping time. */
-  var nextPing : Long = 0
+  private var nextPing : Long = 0
 
   def doPing(key : SelectionKey, now : Long) : Unit = {
     if (nextPing > now) {

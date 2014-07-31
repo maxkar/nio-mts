@@ -10,7 +10,7 @@ import java.nio.channels._
  * @param buffer2 second write buffer.
  * @param ownedKey selection key associated with this handler.
  */
-private[msg] final class MessageWriter(
+final class MessageWriter(
       buffer1 : ByteBuffer,
       buffer2 : ByteBuffer,
       ownedKey : SelectionKey) {
@@ -25,7 +25,9 @@ private[msg] final class MessageWriter(
   private var fillBuf = buffer2
 
 
-  /** Performs a write. */
+  /** Performs a write.
+   * Manages  registration of the write operation.
+   */
   def doWrite(key : SelectionKey, now : Long) : Unit = {
     /* No data to write. */
     if (writeFully(key))
@@ -35,18 +37,17 @@ private[msg] final class MessageWriter(
 
   /** Sends a ping request. */
   def ping() : Unit =
-    doWriteOp(buffer ⇒ buffer.put(0.asInstanceOf[Byte]))
+    doWriteOp(buffer ⇒ buffer.put(0xFE.asInstanceOf[Byte]))
 
 
   /** Sends a ping reply. */
   def pingReply(time : Long) : Unit =
     doWriteOp(buffer ⇒ buffer.put(0xFF.asInstanceOf[Byte]))
 
+
   /** Sends bytes to the receiver. */
   def send(content : Array[Byte]) : Unit = {
     val len = content.length
-    if (len == 0)
-      throw new IllegalArgumentException("Content can't be empty.")
     val lol =
       if (len <= 0x3F) 1
       else if (len <= 0x3FFF) 2

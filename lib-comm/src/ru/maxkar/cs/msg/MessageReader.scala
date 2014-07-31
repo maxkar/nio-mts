@@ -8,7 +8,7 @@ import java.nio.channels._
 /**
  * Message reader for the messaging protocol.
  * As all chan handlers, this class is single-threaded.
- * @param buffer work buffer.
+ * @param buffer work buffer used to store input temporary.
  * @param callback callback to invoke on received message.
  *    Will be called with null upon an eof.
  * @param pingCallback callback to invoke on ping requests.
@@ -17,7 +17,7 @@ import java.nio.channels._
  * @param messageLimit maximal message length, larger messages
  *   will cause an IO exception.
  */
-private[msg] final class MessageReader(
+final class MessageReader(
       buffer : ByteBuffer,
       callback : Array[Byte] ⇒ Unit,
       pingCallback : (Long) ⇒ Unit,
@@ -27,31 +27,33 @@ private[msg] final class MessageReader(
   /**
    * Buffer to fill.
    */
-  var nextBuffer : Array[Byte] = null
+  private var nextBuffer : Array[Byte] = null
 
 
   /**
    * Position in "next buffer" ready to write.
    */
-  var writePos : Int = 0
+  private var writePos : Int = 0
 
 
   /**
    * Length reading head.
    */
-  var lengthHead : Int = 0
+  private var lengthHead : Int = 0
 
 
   /**
    * Number of bytes to read until length is complete.
    * Zero after lenght is read and next input buffer is initialized.
    */
-  var lengthPendingBytes : Int = 0
+  private var lengthPendingBytes : Int = 0
 
 
 
   /**
    * Performs a read from the stream.
+   * Invokes a handler for fully processed messages.
+   * If EOF is reached, deregisters seletor from reading.
    */
   def doRead(item : SelectionKey, now : Long) : Unit = {
     val sockChannel = item.channel().asInstanceOf[SocketChannel]
@@ -89,7 +91,7 @@ private[msg] final class MessageReader(
     /* Special handling, protocode. */
     if (nextBuffer == null) {
       lengthHead match {
-        case 0 ⇒
+        case 0xFE ⇒
           pingCallback(now)
           return true
         case 0xFF ⇒
@@ -104,8 +106,11 @@ private[msg] final class MessageReader(
     /* Regular read. */
     val readLimit = Math.min(buffer.remaining(), nextBuffer.length - writePos)
 
-    buffer.get(nextBuffer, writePos, readLimit)
-    writePos += readLimit
+    if (lengthHead > 0) {
+      buffer.get(nextBuffer, writePos, readLimit)
+      writePos += readLimit
+    }
+
 
     /* Message is not fully read. */
     if (writePos < nextBuffer.length)
@@ -131,7 +136,7 @@ private[msg] final class MessageReader(
     if (lengthPendingBytes == 0) {
       lengthHead = 0xFF & buffer.get()
 
-      if (lengthHead == 0 || lengthHead == 0xFF)
+      if (lengthHead == 0xFF || lengthHead == 0xFE)
         return true
 
       lengthPendingBytes = lengthHead >> 6

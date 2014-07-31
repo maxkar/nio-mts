@@ -264,6 +264,32 @@ object Multiplexor {
    * @param threadFactory daemon thread factory. If null,
    *   then default value will be used.
    */
+  def make[T](
+        handler : IOHandler[T],
+        commandBacklog : Int,
+        pingTimeoutMs : Int,
+        commandBatchSize : Int = 0,
+        threadFactory : Runnable ⇒ Thread = null)
+      : Multiplexor[T] = {
+    val result = new Multiplexor(
+      handler,
+      commandBacklog,
+      if (commandBatchSize <= 0) commandBacklog else commandBatchSize,
+      pingTimeoutMs,
+      if (threadFactory == null) defaultThreadFactory else threadFactory)
+    result.worker.start()
+    result
+  }
+
+  /** Creates a new multiplexor.
+   * @param commandBacklog number of commands allowed in the queue.
+   * @param pingTimeoutMs ping timeout in millis.
+   * @param commandBatchSize number of commands to process before
+   *   dropping to IO. If zero, then commandBacklog will be used
+   *   as a batch size.
+   * @param threadFactory daemon thread factory. If null,
+   *   then default value will be used.
+   */
   def apply(
         commandBacklog : Int,
         pingTimeoutMs : Int,

@@ -20,7 +20,7 @@ final object App {
     if (args.length > 0)
       client()
     else
-      serve()
+      Server.serve(serverAddress())
   }
 
   private def serverAddress() : InetSocketAddress =
@@ -76,44 +76,4 @@ final object App {
     })
   }
 
-
-  private def serve() : Unit = {
-    val serverChannel = ServerSocketChannel.open()
-    serverChannel.configureBlocking(false)
-    serverChannel.bind(serverAddress(), 10)
-
-    val multiplex = Multiplexor(200, 2000)
-
-    val pool = new BufferPool(1024 * 1024)
-
-    multiplex.submit((selector, time) ⇒
-      serverChannel.register(
-        selector,
-        SelectionKey.OP_ACCEPT,
-        Handlers.acceptor(
-          (chan, sel, time) ⇒ {
-            chan.configureBlocking(false)
-            val key = chan.register(sel, 0, null)
-            val (b1, b2, b3, closer) = pool.get()
-
-            Messenger.bind(key, b1, b2, b3,
-              (messenger, message) ⇒ {
-                if (message == null)
-                  messenger.close()
-                else
-                  messenger.send(message)
-              },
-              closeHandler = closer)
-          },
-          (chan, exn) ⇒ {
-            exn.printStackTrace()
-            chan.close()
-            multiplex.close()
-          })))
-
-    System.in.read()
-    multiplex.close()
-    multiplex.awaitTermination()
-    System.out.println("Done!")
-  }
 }
