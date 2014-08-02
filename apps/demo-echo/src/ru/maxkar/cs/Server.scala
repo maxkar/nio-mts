@@ -12,74 +12,50 @@ import ru.maxkar.cs.util.BufferPool
 /** Server process implementation. */
 private class Server(pool : BufferPool) {
 
-  private def doAccept(key : SelectionKey, now : Long, ctx : ServerContext) : Unit = {
-    if (ctx.serverChannel == null)
-      return
-    val clientSocket = ctx.serverChannel.accept()
-    if (clientSocket == null)
-      return
 
+  private def afterAccept(channel : SocketChannel, selector : Selector, now : Long) : Unit = {
     try {
-      clientSocket.configureBlocking(false)
+      channel.configureBlocking(false)
 
       val (b1, b2, b3, cleaner) = pool.get()
-      val clientKey = clientSocket.register(key.selector(), SelectionKey.OP_READ, null)
+      val clientKey = channel.register(selector, SelectionKey.OP_READ, null)
       val writer = new MessageWriter(b1, b2, clientKey)
       val pinger = new Pinger(10000, 30000, writer.ping)
       val reader = new MessageReader(b3,
         msg ⇒
           if (msg == null)
-            clientSocket.close()
+            channel.close()
           else
             writer.send(msg)
       , writer.pingReply, pinger.resetPing, 10000)
 
-      clientKey.attach(
-        new ServerContext(null, new ServerClientContext(reader, writer, pinger, cleaner)))
+
+      clientKey.attach(new ServerContext(
+        IOHandler.communicationHandler(
+          onRead = (s, n, c) ⇒ reader.doRead(s, n),
+          onWrite = (s, n, c) ⇒ writer.doWrite(s, n),
+          onPing = (s, n, c) ⇒ pinger.doPing(s, n),
+          onError = Multiplexor.printStackAndClose),
+        cleaner))
     } catch {
       case t : IOException ⇒
-        clientSocket.close()
+        channel.close()
         t.printStackTrace()
+      case t : Throwable ⇒
+        channel.close()
+        throw t
     }
   }
 
 
-  private def doRead(key : SelectionKey, now : Long, ctx : ServerContext) : Unit =
-    if (ctx.clientContext != null)
-      ctx.clientContext.reader.doRead(key, now)
+  private val serverHandlers =
+    IOHandler.autoAcceptor(
+      afterAccept = afterAccept,
+      onError = Multiplexor.printStackAndAbort)
 
 
-  private def doWrite(key : SelectionKey, now : Long, ctx : ServerContext) : Unit =
-    if (ctx.clientContext != null)
-      ctx.clientContext.writer.doWrite(key, now)
-
-
-  private def doPing(key : SelectionKey, now : Long, ctx : ServerContext) : Unit =
-    if (ctx.clientContext != null)
-      ctx.clientContext.pinger.doPing(key, now)
-
-
-  private def handleError(
-        key : SelectionKey,
-        now : Long,
-        ctx : ServerContext,
-        err : Throwable)
-      : Unit = {
-    if (ctx.serverChannel != null)
-      Multiplexor.printStackAndAbort(key, now, ctx, err)
-    else
-      Multiplexor.printStackAndClose(key, now, ctx, err)
-  }
-
-
-  private val ioHandlers = new IOHandler[ServerContext](
-    onAccept = doAccept,
-    onConnect = (k, s, n) ⇒ k.interestOps(k.interestOps() & ~SelectionKey.OP_CONNECT),
-    onRead = doRead,
-    onWrite = doWrite,
-    onPing = doPing,
-    onError = handleError
-  )
+  private val ioHandlers =
+    IOHandler.polymorph[ServerContext](c ⇒ c.ioVector)
 }
 
 
@@ -98,7 +74,7 @@ private [cs] object Server {
 
     multiplex.submit((selector, now) ⇒
       serverChannel.register(selector, SelectionKey.OP_ACCEPT,
-        new ServerContext(serverChannel, null)))
+        new ServerContext(server.serverHandlers, () => ())))
 
     System.in.read()
     multiplex.close()
