@@ -234,27 +234,6 @@ object Multiplexor {
   import SelectorUtil._
 
 
-
-  /** Temporary handler. */
-  @deprecated
-  private val compatHandler = new IOHandler[SelectionHandler](
-    onAccept = (k, t, c) ⇒ c.accept(k, t),
-    onConnect = (k, t, c) ⇒ c.connected(k, t),
-    onRead = (k, t, c) ⇒ c.read(k, t),
-    onWrite = (k, t, c) ⇒ c.write(k, t),
-    onPing = (k, t, c) ⇒ c.ping(k, t),
-    onError =
-     (k, t, c, err) ⇒ {
-       try {
-         err.printStackTrace()
-       } finally {
-         c.demultiplex(k)
-       }
-     }
-  )
-
-
-
   /** Creates a new multiplexor.
    * @param commandBacklog number of commands allowed in the queue.
    * @param pingTimeoutMs ping timeout in millis.
@@ -273,31 +252,6 @@ object Multiplexor {
       : Multiplexor[T] = {
     val result = new Multiplexor(
       handler,
-      commandBacklog,
-      if (commandBatchSize <= 0) commandBacklog else commandBatchSize,
-      pingTimeoutMs,
-      if (threadFactory == null) defaultThreadFactory else threadFactory)
-    result.worker.start()
-    result
-  }
-
-  /** Creates a new multiplexor.
-   * @param commandBacklog number of commands allowed in the queue.
-   * @param pingTimeoutMs ping timeout in millis.
-   * @param commandBatchSize number of commands to process before
-   *   dropping to IO. If zero, then commandBacklog will be used
-   *   as a batch size.
-   * @param threadFactory daemon thread factory. If null,
-   *   then default value will be used.
-   */
-  def apply(
-        commandBacklog : Int,
-        pingTimeoutMs : Int,
-        commandBatchSize : Int = 0,
-        threadFactory : Runnable ⇒ Thread = null)
-      : Multiplexor[SelectionHandler] = {
-    val result = new Multiplexor(
-      compatHandler,
       commandBacklog,
       if (commandBatchSize <= 0) commandBacklog else commandBatchSize,
       pingTimeoutMs,
