@@ -45,7 +45,6 @@ final class IOHandler[-C](
 
 
 
-
 /** Companion for IO handler class. */
 final object IOHandler {
 

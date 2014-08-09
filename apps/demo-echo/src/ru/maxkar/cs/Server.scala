@@ -1,6 +1,6 @@
 package ru.maxkar.cs
 
-import java.io._
+import java.io.IOException
 import java.net._
 import java.nio.channels._
 
@@ -12,6 +12,47 @@ import ru.maxkar.cs.util.BufferPool
 /** Server process implementation. */
 private class Server(pool : BufferPool) {
 
+  /** Message writer. */
+  private val writer = Writer.writer[ServerContext](
+    _.writeContext, _.key)
+
+
+  /** Write message handler. */
+  private def messageHandler(k : SelectionKey, n : Long, msg : Array[Byte], c : ServerContext) : Unit =
+    writer.send(msg, c)
+
+
+  /** End-of-file handler. */
+  private def eofHandler(k : SelectionKey, n : Long, c : ServerContext) : Unit =
+    try {
+      k.channel.close()
+    } finally {
+      c.cleaner()
+    }
+
+
+
+  /** Ping handler. */
+  private val pinger = Pinger.pinger[ServerContext](
+    c ⇒ c.pingContext, 10000, 30000, writer.ping)
+
+
+  /** Message parser. */
+  private val msgParser = Parser.parser[ServerContext](
+    c ⇒ c.readContext,
+    onMessage = messageHandler,
+    onEof = eofHandler,
+    onPingRequest = writer.pingReply,
+    onPingResponse = pinger.reset,
+    messageSizeLimit = 10000)
+
+
+  /** Read handler. */
+  private val readHandler = Transport.byteBufferReader[ServerContext](
+    c ⇒ c.readBuffer,
+    onMessage = msgParser.update,
+    onEof = msgParser.finish)
+
 
   private def afterAccept(channel : SocketChannel, selector : Selector, now : Long) : Unit = {
     try {
@@ -19,23 +60,19 @@ private class Server(pool : BufferPool) {
 
       val (b1, b2, b3, cleaner) = pool.get()
       val clientKey = channel.register(selector, SelectionKey.OP_READ, null)
-      val writer = new MessageWriter(b1, b2, clientKey)
-      val pinger = new Pinger(10000, 30000, writer.ping)
-      val reader = new MessageReader(b3,
-        msg ⇒
-          if (msg == null)
-            channel.close()
-          else
-            writer.send(msg)
-      , writer.pingReply, pinger.resetPing, 10000)
 
 
       clientKey.attach(new ServerContext(
         IOHandler.communicationHandler(
-          onRead = (s, n, c) ⇒ reader.doRead(s, n),
-          onWrite = (s, n, c) ⇒ writer.doWrite(s, n),
-          onPing = (s, n, c) ⇒ pinger.doPing(s, n),
+          onRead = readHandler,
+          onWrite = writer.doWrite,
+          onPing = pinger.doPing,
           onError = Multiplexor.printStackAndClose),
+        b3,
+        Pinger.context(),
+        Parser.context(),
+        Writer.context(b1, b2),
+        clientKey,
         cleaner))
     } catch {
       case t : IOException ⇒
@@ -63,6 +100,7 @@ private class Server(pool : BufferPool) {
 /** Server processor. */
 private [cs] object Server {
 
+
   def serve(address : InetSocketAddress) : Unit = {
     val serverChannel = ServerSocketChannel.open()
     serverChannel.configureBlocking(false)
@@ -74,7 +112,7 @@ private [cs] object Server {
 
     multiplex.submit((selector, now) ⇒
       serverChannel.register(selector, SelectionKey.OP_ACCEPT,
-        new ServerContext(server.serverHandlers, () => ())))
+        new ServerContext(server.serverHandlers, null, null, null, null, null, () => ())))
 
     System.in.read()
     multiplex.close()

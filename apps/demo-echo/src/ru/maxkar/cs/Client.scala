@@ -1,6 +1,7 @@
 package ru.maxkar.cs
 
-import java.io._
+import java.io.BufferedReader
+import java.io.InputStreamReader
 import java.nio._
 import java.nio.channels._
 import java.net._
@@ -12,7 +13,47 @@ import ru.maxkar.cs.msg._
  * Echo client.
  */
 final object Client {
-  private class ClientContext(val handler : IOHandler[ClientContext])
+  private class ClientContext(
+      val handler : IOHandler[ClientContext],
+      val readBuf : ByteBuffer,
+      val parseContext : Parser.Context,
+      val pingContext : Pinger.Context,
+      val writeContext : Writer.Context,
+      val key : SelectionKey)
+
+
+  private val writer =
+    Writer.writer[ClientContext](
+      c ⇒ c.writeContext,
+      c ⇒ c.key)
+
+
+  private val pinger = Pinger.pinger[ClientContext](
+    c ⇒ c.pingContext, 10000, 30000, writer.ping)
+
+
+  private val messageParser =
+    Parser.parser[ClientContext](
+      c ⇒ c.parseContext,
+      onMessage = (k, n, msg, c) ⇒ System.out.println(new String(msg, "UTF-8")),
+      onEof = (k, n, c) ⇒ {
+        k.channel().close()
+        k.selector().close()
+        System.exit(0)
+      },
+      onPingRequest = writer.pingReply,
+      onPingResponse = pinger.reset
+    )
+
+
+  private val readHandler =
+    Transport.byteBufferReader[ClientContext](
+      c ⇒ c.readBuf,
+      onMessage = messageParser.update,
+      onEof = messageParser.finish)
+
+
+
 
   def afterConnect(multiplex : Multiplexor[_],
         key : SelectionKey, chan : SocketChannel, now : Long, context : ClientContext) : Unit = {
@@ -20,24 +61,16 @@ final object Client {
     val write1 = ByteBuffer.allocateDirect(1024)
     val write2 = ByteBuffer.allocateDirect(1024)
 
-    val writer = new MessageWriter(write1, write2, key)
-    val pinger = new Pinger(10000, 30000, writer.ping)
-    val reader = new MessageReader(readBuf,
-      msg ⇒
-        if (msg == null) {
-          chan.close()
-          key.selector().close()
-          System.exit(0)
-        } else
-          System.out.println(new String(msg, "UTF-8"))
-    , writer.pingReply, pinger.resetPing, 10000)
-
     key.interestOps(SelectionKey.OP_READ)
-    key.attach(new ClientContext(IOHandler.communicationHandler(
-      onRead = (k, n, c) ⇒ reader.doRead(k, n),
-      onWrite = (k, n, c) ⇒ writer.doWrite(k, n),
-      onPing = (k, n, c) ⇒ pinger.doPing(k, n),
-      onError = Multiplexor.printStackAndAbort)))
+
+    val c = new ClientContext(IOHandler.communicationHandler(
+      onRead = readHandler,
+      onWrite = writer.doWrite,
+      onPing = pinger.doPing,
+      onError = Multiplexor.printStackAndAbort),
+      readBuf,
+      Parser.context(), Pinger.context(), Writer.context(write1, write2), key)
+    key.attach(c)
 
 
     new Thread(new Runnable() {
@@ -53,7 +86,7 @@ final object Client {
             return
           }
           multiplex.submit((selector, time) ⇒
-            writer.send(line.getBytes("UTF-8")))
+            writer.send(line.getBytes("UTF-8"), c))
         }
       }
     }).start()
@@ -74,7 +107,7 @@ final object Client {
         IOHandler.autoConnector(
           afterConnect = afterConnect(multiplex, _, _, _, _),
           onError = Multiplexor.printStackAndAbort,
-          connectDeadline = now + 5000))))
+          connectDeadline = now + 5000), null, null, null, null, null)))
 
     multiplex.awaitTermination()
   }
