@@ -1,4 +1,4 @@
-
+package ru.maxkar.niocomm
 
 import java.nio.ByteBuffer
 import java.nio.channels.SelectableChannel
@@ -132,19 +132,16 @@ final object BufferWriter {
 
 
   /**
-   * Enqueues a buffer for the write. Nonempty buffer will go to the
-   * write queue. Empty buffer will go directly to release queue if there
-   * are no pending writes otherwise it will also go to the write queue.
+   * Enqueues a buffer for the write. Buffer must be non-empty.
    * @param context context to enqueue item to.
    * @param target new buffer to enqueue.
+   * @throws IllegalArgumentException if buffer is empty.
    */
   def enqueue(context : T, target : ByteBuffer) : Unit = {
     if (target.hasRemaining)
       context.writeQueue += target
-    else if (hasPendingWrites(context))
-      context.writeQueue += target
     else
-      context.releaseQueue += target
+      throw new IllegalArgumentException("Buffer must not be empty")
   }
 
 
