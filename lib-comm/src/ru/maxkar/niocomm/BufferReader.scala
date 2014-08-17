@@ -63,7 +63,7 @@ final object BufferReader {
    * or a current buffer if it have some data in it.
    * @return true iff there is a ready buffer.
    */
-  def haveReadyBuffer(context : T) : Boolean =
+  def hasReadyBuffer(context : T) : Boolean =
     !context.fullQueue.isEmpty ||
     (context.activeBuffer != null && context.activeBuffer.position() > 0)
 
@@ -125,6 +125,23 @@ final object BufferReader {
 
 
   /**
+   * Adds a new read buffer. Passed buffer is cleared and
+   * added to the list of free buffers.
+   * @param context context to add buffer to.
+   * @param buffer buffer to add to the context. Buffer must have
+   * positive capacity.
+   * @throws IllegalArgumentException if buffer have zero capacity.
+   */
+  def addBuffer(context : T, buffer : ByteBuffer) : Unit = {
+    buffer.clear()
+    if (buffer.capacity == 0)
+      throw new IllegalArgumentException("Buffer must have positive capacity")
+    context.emptyQueue += buffer
+  }
+
+
+
+  /**
    * Gets a full buffer from the context. Returned buffer is
    * "flipped" and is ready for "read" operations.
    * @param context context to extract buffer from.
@@ -162,23 +179,6 @@ final object BufferReader {
     context.activeBuffer = null
     res.flip()
     res
-  }
-
-
-
-  /**
-   * Adds a new read buffer. Passed buffer is cleared and
-   * added to the list of free buffers.
-   * @param context context to add buffer to.
-   * @param buffer buffer to add to the context. Buffer must have
-   * positive capacity.
-   * @throws IllegalArgumentException if buffer have zero capacity.
-   */
-  def addBuffer(context : T, buffer : ByteBuffer) : Unit = {
-    buffer.clear()
-    if (buffer.capacity == 0)
-      throw new IllegalArgumentException("Buffer must have positive capacity")
-    context.emptyQueue += buffer
   }
 
 
