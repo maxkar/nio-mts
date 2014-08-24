@@ -38,7 +38,7 @@ final object BufferWriter {
    * size limits and can accomodate any number of buffers allowed by the
    * memory.
    */
-  def unboubdedContext() : T = new T()
+  def unboundedContext() : T = new T()
 
 
 
@@ -220,5 +220,16 @@ final object BufferWriter {
       context.releaseQueue.dequeue
     else
       null
+
+
+
+  /**
+   * Clears context by dropping all the buffers.
+   * @param context context to clear.
+   * @return list of all buffers in the context.
+   */
+  def clear(context : T) : Seq[ByteBuffer] =
+    context.releaseQueue.drop(0) ++
+    context.writeQueue.drop(0)
 }
 

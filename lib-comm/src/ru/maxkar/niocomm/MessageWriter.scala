@@ -245,6 +245,26 @@ final object MessageWriter {
 
 
   /**
+   * Clears all the buffers from the context by dropping
+   * ready, pending and empty buffers.
+   * @param context context to clear.
+   * @return list of all released buffers.
+   */
+  def clear(context : T) : Seq[ByteBuffer] = {
+    val res = new scala.collection.mutable.ArrayBuffer[ByteBuffer]
+    res ++= context.freeBuffers.drop(0)
+    res ++= context.fullBuffers.drop(0)
+    if (context.currentBuffer != null) {
+      res += context.currentBuffer
+      context.currentBuffer = null
+    }
+    res
+  }
+
+
+
+
+  /**
    * Writes one byte into the context.
    * Context must have sufficient space to write that byte.
    */
