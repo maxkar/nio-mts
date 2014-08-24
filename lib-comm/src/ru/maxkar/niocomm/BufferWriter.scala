@@ -8,228 +8,120 @@ import java.nio.channels.WritableByteChannel
 import scala.collection.mutable.Queue
 
 
+
 /**
- * Writer for byte buffers. Writer context is push/pull driven. Socket write
- * and buffer enqueue requests are pushed from the upstream handler. Free
- * buffers are polled from the context.
- * <p>Write context has two queues. First one is used to store items
- * not written yet. Second is used to store completely written items.
- * "Free" buffers are returned in the order they was written.
+ * Writer for byte buffers. Writer is push/pull driven. Write
+ * requests are added to the "queue" sink. Free buffers are
+ * available via "written" source. Items are released in order
+ * they was enqueued.
+ * <p>Typical outer flow is as follows:<ol>
+ *  <li>Enqueue new items into the writer.
+ *  <li>Flush this buffer into a stream
+ *  <li>Retrieve released buffers.
+ * </ol>
+ */
+final class BufferWriter private () {
+
+  /** Queue of buffers to write. */
+  private val writeQueue = new Queue[ByteBuffer]
+
+
+  /**
+   * Queue of written (empty) buffers.
+   * Buffer order in this queue matches the write order
+   * of original buffers.
+   */
+  private val releaseQueue = new Queue[ByteBuffer]
+
+
+
+  /**
+   * Write requests sink. Write requests are enqueued
+   * and will be fullfilled by <code>writeTo</code>
+   * operations. Completely written buffers will be available
+   * in the <code>written</code> source.
+   * <p>All added buffers should be in "write" position.
+   */
+  val queue : Sink[ByteBuffer] = Sink(writeQueue.+=)
+
+
+
+  /**
+   * Source of written (and released) buffers.
+   * Buffers will be returned in the same order as they was
+   * enqueued.
+   */
+  val written : Source[ByteBuffer] =
+    Source(() ⇒ !releaseQueue.isEmpty, releaseQueue.dequeue)
+
+
+
+  /**
+   * Checks if there are pending writes. This mean that
+   * there is a buffer in the write queue.
+   * @return <code>true</code> iff there is a non-written buffer.
+   */
+  def hasPendingWrites() : Boolean = !writeQueue.isEmpty
+
+
+
+  /**
+   * Writes this context into the writable channel. Completely
+   * written buffers will be available in the <code>written</code> source.
+   * @param channel destination channel.
+   */
+  def writeTo(channel : WritableByteChannel) : Unit =
+    while (!writeQueue.isEmpty) {
+      val buf = writeQueue.head
+
+      channel.write(buf)
+      if (buf.hasRemaining())
+        return
+
+      releaseQueue += writeQueue.dequeue
+    }
+
+
+
+  /**
+   * Writes this context to a channel associated with the selection key.
+   * Updates a key interested ops based on the buffer state. Adds write
+   * to the interested ops if there are pending writes. Removes write op
+   * from interested ops if there are no pending writes.
+   * @param key selection key with the associated writable channel.
+   */
+  def writeTo(key : SelectionKey) : Unit = {
+    writeTo(key.channel().asInstanceOf[WritableByteChannel])
+    if (hasPendingWrites)
+      key.interestOps(key.interestOps | SelectionKey.OP_WRITE)
+    else
+      key.interestOps(key.interestOps & ~SelectionKey.OP_WRITE)
+  }
+
+
+
+  /**
+   * Clears all the queues and releases all the buffers.
+   * This operation can be used by close/release code to
+   * return all buffers to a resource management system.
+   */
+  def clear() : Seq[ByteBuffer] =
+    releaseQueue.drop(0) ++ writeQueue.drop(0)
+}
+
+
+
+
+/**
+ * Buffer writer companion.
  */
 final object BufferWriter {
 
-  /** Context type for buffer writer. */
-  final class T private[BufferWriter]() {
-    /** Queue of buffers to write. */
-    private[BufferWriter] val writeQueue = new Queue[ByteBuffer]
-
-    /**
-     * Queue of written (emptied) buffers.
-     * Buffer order in this queue matches the write order
-     * of original buffers.
-     */
-    private[BufferWriter] var releaseQueue = new Queue[ByteBuffer]
-  }
-
-
-
   /**
-   * Creates a new unbounded context. This write context has no synthetic
-   * size limits and can accomodate any number of buffers allowed by the
-   * memory.
+   * Creates a new unbounded writer. This writer has no synthetic
+   * size limitations and can accomadate any number of buffers allowed by
+   * memory settings.
    */
-  def unboundedContext() : T = new T()
-
-
-
-  /**
-   * Checks if there are pending writes on the context. This means that
-   * there is an enqueued non-empty buffer in the write queue.
-   * @return true iff there is a pending write (non-empty buffer in the
-   * write queue).
-   */
-  def hasPendingWrites(context : T) : Boolean =
-    !context.writeQueue.isEmpty
-
-
-
-  /**
-   * Checks if there are pending releases on the context.
-   * @return true iff there are non-released items.
-   */
-  def hasPendingReleases(context : T) : Boolean =
-    !context.releaseQueue.isEmpty
-
-
-
-  /**
-   * Writes a context into the given writeable channel. Moves completed
-   * source buffer to the release queue. State of the context is undefined
-   * if any exception is thrown.
-   * @param context context to write.
-   * @param target destination channel for the buffer.
-   * @return true iff at least one buffer was released into the
-   * release queue. If no new buffers was released, returns false even
-   * release queue is not empty.
-   */
-  def writeToChannel(context : T, target : WritableByteChannel) : Boolean = {
-    var itemReleased = false
-
-    while (!context.writeQueue.isEmpty) {
-      val item = context.writeQueue.head
-
-      if (item.hasRemaining)
-        target.write(item)
-
-      /* Keep item in the queue if it was not writen completely. */
-      if (item.hasRemaining)
-        return itemReleased
-
-      /* Move item to the release queue. */
-      itemReleased = true
-      context.writeQueue.dequeue
-      context.releaseQueue += item
-    }
-
-    itemReleased
-  }
-
-
-
-  /**
-   * Writes a context into the writeble channel associated with che
-   * selection key. Moves completed source buffers to the release queue.
-   * State of the context is undefined if any exception is thrown.
-   * @param context context to write.
-   * @param target destination selection key. Data are written to the
-   *   channel associated with the selection key.
-   * @return true iff at least one buffer was released into the
-   * release queue. If no new buffers was released, returns false even
-   * release queue is not empty.
-   */
-  def writeToSelectionKey(context : T, target : SelectionKey) : Boolean =
-    writeToChannel(context, target.channel.asInstanceOf[WritableByteChannel])
-
-
-
-  /**
-   * Writes a context into the writeable channel associated with the key.
-   * Deregisters the channel from the write operation if there are no more items
-   * in the write queue. Otherwise behass as [[writeToSelectionKey]].
-   * @param context context to write.
-   * @param target target selection key.
-   * @return true at least one buffer was released into the release queue.
-   */
-  def smartWriteToSelectionKey(context : T, target : SelectionKey) : Boolean = {
-    val res = writeToSelectionKey(context, target)
-
-    if (!hasPendingWrites(context))
-      target.interestOps(target.interestOps() & ~SelectionKey.OP_WRITE)
-
-    res
-  }
-
-
-
-  /**
-   * Enqueues a buffer for the write. Buffer must be non-empty.
-   * @param context context to enqueue item to.
-   * @param target new buffer to enqueue.
-   * @throws IllegalArgumentException if buffer is empty.
-   */
-  def enqueue(context : T, target : ByteBuffer) : Unit = {
-    if (target.hasRemaining)
-      context.writeQueue += target
-    else
-      throw new IllegalArgumentException("Buffer must not be empty")
-  }
-
-
-
-  /**
-   * Enqueues item and attempts to flush data if write queue was empty
-   * before call to this method.
-   * @param context context to enqueue item to.
-   * @param target new buffer to enqueue.
-   * @param channel channel to try to write the data.
-   * @return true iff all the data was written and write queue is empty.
-   */
-  def enqueueAndWriteToChannel(
-        context : T, target : ByteBuffer, channel : WritableByteChannel)
-      : Boolean = {
-
-    val shouldTryWrite = !hasPendingWrites(context)
-    enqueue(context, target)
-
-    /* If trying to write, then queue contains only one item.
-     * However, empty items will go directly to the release queue
-     * so write will return false, but buffer is already processed.
-     */
-    if (shouldTryWrite)
-      writeToChannel(context, channel) || !target.hasRemaining()
-    else
-      false
-  }
-
-
-
-  /**
-   * Enqueues item and attempts to flush data if write queue was empty
-   * before call to this method.
-   * @param context context to enqueue item to.
-   * @param target new buffer to enqueue.
-   * @param key selection key to extract target channel.
-   * @return true iff all the data was written and write queue is empty.
-   */
-  def enqueueAndWriteToSelectionKey(
-        context : T, target : ByteBuffer, key : SelectionKey)
-      : Boolean =
-    enqueueAndWriteToChannel(context, target,
-      key.channel.asInstanceOf[WritableByteChannel])
-
-
-
-  /**
-   * Enqueues item and attempts to flush data. Similar to
-   * [[enqueueAndWriteToSelectionKey]], but registers a selection key
-   * to the write operation if there are some remaining data.
-   */
-  def smartEnqueueAndWriteToSelectionKey(
-        context : T, target : ByteBuffer, key : SelectionKey)
-     : Boolean = {
-
-    val res = enqueueAndWriteToSelectionKey(context, target, key)
-    if (!res)
-      key.interestOps(key.interestOps() | SelectionKey.OP_WRITE)
-    res
-  }
-
-
-
-  /**
-   * Releases a first written but not released buffer. Buffers
-   * are released in the write order.
-   * @param context context to release a buffer from.
-   * @return next "released" buffer or <code>null</code> if
-   * there are no released buffers. Null value means that
-   * either there are no buffers associated with the context
-   * or that all buffers are waiting a write operation.
-   */
-  def releaseBuffer(context : T) : ByteBuffer =
-    if (hasPendingReleases(context))
-      context.releaseQueue.dequeue
-    else
-      null
-
-
-
-  /**
-   * Clears context by dropping all the buffers.
-   * @param context context to clear.
-   * @return list of all buffers in the context.
-   */
-  def clear(context : T) : Seq[ByteBuffer] =
-    context.releaseQueue.drop(0) ++
-    context.writeQueue.drop(0)
+  def create() : BufferWriter = new BufferWriter()
 }
 

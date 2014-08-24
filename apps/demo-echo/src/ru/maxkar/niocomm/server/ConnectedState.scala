@@ -29,9 +29,9 @@ final object ConnectedState {
    */
   final class T private[ConnectedState](
       private[ConnectedState] val readBuffer : ByteBuffer,
-      private[ConnectedState] val messageReadContext : MessageReader.T,
-      private[ConnectedState] val writeContext : MessageWriter.T,
-      private[ConnectedState] val outContext : BufferWriter.T,
+      private[ConnectedState] val readContext : MessageReader,
+      private[ConnectedState] val writeContext : MessageWriter,
+      private[ConnectedState] val outContext : BufferWriter,
       private[ConnectedState] var nextPingRequest : Long) {
 
     /** Time of the next expected ping response. */
@@ -43,49 +43,28 @@ final object ConnectedState {
   /**
    * Creates a new communication context.
    */
-  def context(now : Long, buf1 : ByteBuffer, buf2 : ByteBuffer, buf3 : ByteBuffer) : T = {
-    val res = new T(
+  def context(now : Long, buf1 : ByteBuffer, buf2 : ByteBuffer, buf3 : ByteBuffer) : T =
+    new T(
       buf1,
-      MessageReader.unboundedContext,
-      MessageWriter.unboundedContext,
-      BufferWriter.unboundedContext,
+      MessageReader.create,
+      MessageWriter.create(buf2, buf3),
+      BufferWriter.create,
       now + pingRequestDelay
     )
-
-
-    MessageWriter.addBuffer(res.writeContext, buf2)
-    MessageWriter.addBuffer(res.writeContext, buf3)
-
-    res
-  }
 
 
 
   /** Performs a write operation. */
   def doWrite(key : SelectionKey, now : Long, context : T) : Unit = {
-    BufferWriter.smartWriteToSelectionKey(context.outContext, key)
+    context.outContext.queue ++= context.writeContext.fullBuffers
+    context.outContext.writeTo(key)
 
-
-    var noMoreBufs = false
-    while (noMoreBufs) {
-      val buf = BufferWriter.releaseBuffer(context.outContext)
-      if (buf == null)
-        noMoreBufs = true
-      else
-        MessageWriter.addBuffer(context.writeContext, buf)
+    if (!context.outContext.hasPendingWrites) {
+      context.outContext.queue ++= context.writeContext.readyBuffers
+      context.outContext.writeTo(key)
     }
 
-
-    if (BufferWriter.hasPendingWrites(context.outContext))
-      return
-
-    val lastBuffer = MessageWriter.getReadyBuffer(context.writeContext)
-
-    if (lastBuffer != null)
-      if (BufferWriter.smartEnqueueAndWriteToSelectionKey(
-          context.outContext, lastBuffer, key))
-        MessageWriter.addBuffer(context.writeContext,
-          BufferWriter.releaseBuffer(context.outContext))
+    context.writeContext.workBuffers ++= context.outContext.written
   }
 
 
@@ -99,52 +78,17 @@ final object ConnectedState {
     if (bytes == 0)
       return
     else if (bytes < 0) {
-      MessageReader.finish(context.messageReadContext)
+      context.readContext.finish()
       release(buf, context)
       key.channel().close()
       return
     }
 
 
-    MessageReader.fillAllMessages(context.messageReadContext, context.readBuffer, 10000)
+    context.readContext.fillAll(context.readBuffer, 10000)
 
-    while (true) {
-      val msg = MessageReader.getNextMessageAsBytes(context.messageReadContext)
-      if (msg == null) {
-        var isReadyToWrite = true
-        var haveWrites = true
-
-        while (haveWrites) {
-          var buf = MessageWriter.getFullBuffer(context.writeContext)
-          if (buf == null)
-            haveWrites = false
-          else
-            isReadyToWrite &=
-              BufferWriter.smartEnqueueAndWriteToSelectionKey(
-                context.outContext, buf, key)
-        }
-
-
-        if (isReadyToWrite) {
-          val buf = MessageWriter.getReadyBuffer(context.writeContext)
-          if (buf != null) {
-              BufferWriter.smartEnqueueAndWriteToSelectionKey(
-                context.outContext, buf, key)
-          }
-        }
-
-
-        var hasCopy = true
-        while (hasCopy) {
-          val rbuf = BufferWriter.releaseBuffer(context.outContext)
-          if (rbuf == null)
-            hasCopy = false
-          else
-            MessageWriter.addBuffer(context.writeContext, rbuf)
-        }
-
-        return
-      }
+    while (context.readContext.byteMessages.hasNext) {
+      val msg = context.readContext.byteMessages.next
 
       if (msg.length == 0)
         throw new IOException("Empty message detected")
@@ -154,13 +98,13 @@ final object ConnectedState {
           context.nextPingResponse = 0
           context.nextPingRequest = now + pingRequestDelay
         case 0 ⇒
-          val req = new Array[Byte](1)
-          req(0) = 1
-          MessageWriter.writeMessage(context.writeContext, req)
+          context.writeContext.byteMessages += Array[Byte](1)
         case 2 ⇒
-          MessageWriter.writeMessage(context.writeContext, msg)
+          context.writeContext.byteMessages += msg
       }
     }
+
+    doWrite(key, now, context)
   }
 
 
@@ -175,18 +119,10 @@ final object ConnectedState {
     }
 
     if (context.nextPingRequest > now) {
-      val req = new Array[Byte](1)
-      req(0) = 1
-      MessageWriter.writeMessage(context.writeContext, req)
+      context.writeContext.byteMessages += Array[Byte](0)
       context.nextPingResponse = now + pingResponceDelay
 
-      if (!BufferWriter.hasPendingWrites(context.outContext)) {
-        val buf = MessageWriter.getReadyBuffer(context.writeContext)
-        if (BufferWriter.smartEnqueueAndWriteToSelectionKey(
-            context.outContext, buf, key))
-          MessageWriter.addBuffer(context.writeContext,
-            BufferWriter.releaseBuffer(context.outContext))
-      }
+      doWrite(key, now, context)
     }
   }
 
@@ -232,9 +168,9 @@ final object ConnectedState {
         context : T)
       : Unit = {
     bufferReleaseCallback(context.readBuffer)
-    MessageWriter.clear(context.writeContext)
+    context.writeContext.clear()
       .foreach(bufferReleaseCallback)
-    BufferWriter.clear(context.outContext)
+    context.outContext.clear()
       .foreach(bufferReleaseCallback)
   }
 }
