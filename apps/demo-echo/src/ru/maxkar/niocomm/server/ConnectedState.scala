@@ -28,10 +28,7 @@ final object ConnectedState {
    * @param nextPingRequest time for the next ping request.
    */
   final class T private[ConnectedState](
-      private[ConnectedState] val readBuffer : ByteBuffer,
-      private[ConnectedState] val readContext : MessageReader,
-      private[ConnectedState] val writeContext : MessageWriter,
-      private[ConnectedState] val outContext : BufferWriter,
+      private[ConnectedState] val ioContext : MessageIO,
       private[ConnectedState] var nextPingRequest : Long) {
 
     /** Time of the next expected ping response. */
@@ -45,10 +42,7 @@ final object ConnectedState {
    */
   def context(now : Long, buf1 : ByteBuffer, buf2 : ByteBuffer, buf3 : ByteBuffer) : T =
     new T(
-      buf1,
-      MessageReader.create,
-      MessageWriter.create(buf2, buf3),
-      BufferWriter.create,
+      MessageIO.create(buf1, 10000, buf2, buf3),
       now + pingRequestDelay
     )
 
@@ -56,39 +50,22 @@ final object ConnectedState {
 
   /** Performs a write operation. */
   def doWrite(key : SelectionKey, now : Long, context : T) : Unit = {
-    context.outContext.queue ++= context.writeContext.fullBuffers
-    context.outContext.writeTo(key)
-
-    if (!context.outContext.hasPendingWrites) {
-      context.outContext.queue ++= context.writeContext.readyBuffers
-      context.outContext.writeTo(key)
-    }
-
-    context.writeContext.workBuffers ++= context.outContext.written
+    context.ioContext.writeTo(key)
   }
 
 
 
   /** Performs a read operation. */
   def doRead(buf : ByteBuffer ⇒ Unit, key : SelectionKey, now : Long, context : T) : Unit = {
-    val bytes =
-      key.channel().asInstanceOf[ReadableByteChannel].read(
-        context.readBuffer)
+    context.ioContext.updateFrom(key)
 
-    if (bytes == 0)
-      return
-    else if (bytes < 0) {
-      context.readContext.finish()
-      release(buf, context)
-      key.channel().close()
+    if (context.ioContext.readComplete) {
+      key.channel.close()
       return
     }
 
-
-    context.readContext.fillAll(context.readBuffer, 10000)
-
-    while (context.readContext.byteMessages.hasNext) {
-      val msg = context.readContext.byteMessages.next
+    while (context.ioContext.inBytes.hasNext) {
+      val msg = context.ioContext.inBytes.next
 
       if (msg.length == 0)
         throw new IOException("Empty message detected")
@@ -98,9 +75,9 @@ final object ConnectedState {
           context.nextPingResponse = 0
           context.nextPingRequest = now + pingRequestDelay
         case 0 ⇒
-          context.writeContext.byteMessages += Array[Byte](1)
+          context.ioContext.outBytes += Array[Byte](1)
         case 2 ⇒
-          context.writeContext.byteMessages += msg
+          context.ioContext.outBytes += msg
       }
     }
 
@@ -119,7 +96,7 @@ final object ConnectedState {
     }
 
     if (context.nextPingRequest > now) {
-      context.writeContext.byteMessages += Array[Byte](0)
+      context.ioContext.outBytes += Array[Byte](0)
       context.nextPingResponse = now + pingResponceDelay
 
       doWrite(key, now, context)
@@ -167,10 +144,6 @@ final object ConnectedState {
         bufferReleaseCallback : ByteBuffer ⇒ Unit,
         context : T)
       : Unit = {
-    bufferReleaseCallback(context.readBuffer)
-    context.writeContext.clear()
-      .foreach(bufferReleaseCallback)
-    context.outContext.clear()
-      .foreach(bufferReleaseCallback)
+    context.ioContext.close().foreach(bufferReleaseCallback)
   }
 }
