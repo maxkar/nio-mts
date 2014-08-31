@@ -39,6 +39,9 @@ private[server] final class ServerState(
     if (sock == null)
       return false
 
+
+    sock.configureBlocking(false)
+
     val ctx = ConnectedState.create(now,
       bufferFactory(), bufferFactory(), bufferFactory())
     val reg = sock.register(sel, SelectionKey.OP_READ, ctx)

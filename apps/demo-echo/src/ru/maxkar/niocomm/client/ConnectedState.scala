@@ -1,24 +1,22 @@
-package ru.maxkar.niocomm.server
-
+package ru.maxkar.niocomm.client
 
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.channels.SelectionKey
-import java.nio.channels.ReadableByteChannel
+
+import scala.collection.mutable.Queue
 
 import ru.maxkar.niocomm._
 
-
-
 /**
- * State for the connected client.
- * @param ioContext input/output context.
- * @param nextPingRequest timestamp for next ping request.
+ * Connected state for the client.
  */
-private[server] class ConnectedState private(
+private class ConnectedState(
+      messages : Queue[String],
       ioContext : MessageIO,
-      private var nextPingRequest : Long
-    ) extends State {
+      private var nextPingRequest : Long)
+    extends State {
+
   import ConnectedState._
 
   /** Next expected ping response. */
@@ -32,13 +30,24 @@ private[server] class ConnectedState private(
       processMessages(key, now)
     }
 
-    if (key.isValid())
+    if (ioContext.readComplete) {
+      System.out.println("Server is gone")
+      key.channel().close()
+      return
+    }
+
+    copyInput()
+
+    if (key.isValid()) {
+      onPing(key, now)
+
       ioContext.writeTo(key)
+    }
   }
 
 
 
-  override def onPing(key : SelectionKey, now : Long) : Unit = {
+  private def onPing(key : SelectionKey, now : Long) : Unit = {
     if (nextPingResponse > 0) {
       if (nextPingResponse < now)
         throw new IOException("Ping expired")
@@ -54,20 +63,17 @@ private[server] class ConnectedState private(
 
 
 
-  override def close(key : SelectionKey) : Seq[ByteBuffer] = {
-    key.channel().close()
-    ioContext.close()
-  }
+  /** Copies input from queue into the output. */
+  private def copyInput() : Unit =
+    messages synchronized {
+      while (!messages.isEmpty)
+        ioContext.outBytes += 2.asInstanceOf[Byte] +: messages.dequeue.getBytes("UTF-8")
+    }
 
 
 
   /** Processes received messages. */
   private def processMessages(key : SelectionKey, now : Long) : Unit = {
-    if (ioContext.readComplete) {
-      key.channel.close()
-      return
-    }
-
     while (ioContext.inBytes.hasNext) {
       val msg = ioContext.inBytes.next
 
@@ -79,9 +85,10 @@ private[server] class ConnectedState private(
           nextPingResponse = 0
           nextPingRequest = now + pingRequestDelay
         case 0 ⇒
+          System.out.println("Incoming ping!")
           ioContext.outBytes += Array[Byte](1)
         case 2 ⇒
-          ioContext.outBytes += msg
+          System.out.println(new String(msg.slice(1, msg.length), "UTF-8"))
       }
     }
   }
@@ -89,11 +96,10 @@ private[server] class ConnectedState private(
 
 
 
-
 /**
  * State definition for the connected client.
  */
-private[server] final object ConnectedState {
+private[client] final object ConnectedState {
 
 
   /** Delay before sending a next ping request. */
@@ -108,10 +114,14 @@ private[server] final object ConnectedState {
    * Creates a new state.
    */
   def create(
-        now : Long, buf1 : ByteBuffer,
-        buf2 : ByteBuffer, buf3 : ByteBuffer) : ConnectedState =
+        messages : Queue[String],
+        now : Long) : State =
     new ConnectedState(
-      MessageIO.create(buf1, 10000, buf2, buf3),
-      now + pingRequestDelay
-    )
+      messages,
+      MessageIO.create(
+        ByteBuffer.allocateDirect(8192),
+        4000,
+        ByteBuffer.allocateDirect(8192),
+        ByteBuffer.allocateDirect(8192)),
+      now + pingRequestDelay)
 }
