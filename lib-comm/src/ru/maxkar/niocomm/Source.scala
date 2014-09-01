@@ -94,4 +94,15 @@ final object Source {
           "Cannot extract element from empty source")
       }
     }
+
+
+
+  /** Source which is always empty. */
+  val empty : Source[Nothing] =
+    new Source[Nothing] {
+      override def hasNext() : Boolean = false
+      override def next() : Nothing =
+        throw new IllegalStateException(
+          "Nothing present in empty source")
+    }
 }

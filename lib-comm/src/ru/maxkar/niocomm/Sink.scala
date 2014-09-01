@@ -57,4 +57,14 @@ final object Sink {
         this
       }
     }
+
+
+
+  /**
+   * Sink which ignores all messages.
+   */
+  val ignore : Sink[Any] =
+    new Sink[Any] {
+      override def +=(item : Any) : this.type = this
+    }
 }
