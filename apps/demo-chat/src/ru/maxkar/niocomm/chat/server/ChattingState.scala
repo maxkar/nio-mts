@@ -15,32 +15,18 @@ import ru.maxkar.niocomm.Source
  * State for the chatting client. This client is
  * part of the chat group, it can send and receive messages.
  * @param context messaging context.
- * @param userId user name (nick, id, etc...).
  * @param nextPing next ping timestamp.
  */
 private final class ChattingState(
+      chat : Chat,
       context : MessageIO,
-      val userId : String,
+      userId : String,
       private var nextPingRequest : Long)
     extends State {
 
 
   /** Next ping response. */
   private var nextPingResponse : Long = 0
-
-
-
-  /** Message queue. */
-  private val messageQueue = new Queue[(String, String)]
-
-
-
-  override val incomingMessages = Source[(String, String)](
-    () ⇒ !messageQueue.isEmpty, messageQueue.dequeue)
-
-
-
-  override val outgoingMessages = context.outData
 
 
 
@@ -56,8 +42,14 @@ private final class ChattingState(
           nextPingRequest = now + ChattingState.pingDelay
           nextPingResponse = 0
         case 2 ⇒
-          val message = data.readUTF()
-          messageQueue += ((userId, message))
+          val msg = data.readUTF()
+          chat.messages += (dos ⇒ {
+            dos.writeByte(2)
+            dos.writeUTF(userId)
+            dos.writeUTF(msg)
+          })
+        case x ⇒
+          throw new IOException("Bad request code " + x)
       }
     }
 
@@ -66,10 +58,12 @@ private final class ChattingState(
     if (!context.readComplete())
       return this
 
+    chat.remove(key)
     key.interestOps(key.interestOps() & ~SelectionKey.OP_READ)
     context.shutdownOutput()
     context.writeTo(key)
-    return ShuttingDownState(context, now)
+
+    ShuttingDownState(context, now)
   }
 
 
@@ -115,6 +109,6 @@ private[server] final object ChattingState {
 
 
   /** Creates a new chatting state. */
-  def apply(context : MessageIO, user : String, now : Long) : State =
-    new ChattingState(context, user, now + pingDelay)
+  def apply(chat : Chat, context : MessageIO, user : String, now : Long) : State =
+    new ChattingState(chat, context, user, now + pingDelay)
 }
